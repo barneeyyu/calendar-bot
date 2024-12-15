@@ -1,5 +1,4 @@
-.PHONY: build clean
-.PHONY: lint lint-fix
+.PHONY: build clean lint lint-fix docker push
 
 # Get golangci-lint binary path
 GOPATH=$(shell go env GOPATH)
@@ -11,18 +10,21 @@ else
 endif
 
 # Get all function binaries for this code base
-# Find all directories with .go files
 TARGETS=$(sort $(dir $(wildcard services/public/func/*/*.go)))
 HANDLERS=$(addsuffix bootstrap,$(TARGETS))
-PACKAGES=$(HANDLERS:/bootstrap=.zip)
 ARTIFACT=bin/
 
-build: setup test $(ARTIFACT) $(HANDLERS) $(PACKAGES)
+# Docker variables
+IMAGE_NAME=calendar-bot
+ACCOUNT_ID=$(shell aws sts get-caller-identity --query Account --output text)
+REGION=$(shell aws configure get region)
+ECR_REPO_URI=$(ACCOUNT_ID).dkr.ecr.$(REGION).amazonaws.com/barney/playground-images
+
+build: setup test $(ARTIFACT) $(HANDLERS)
 
 %/bootstrap: %/*.go
 	env GOARCH=amd64 GOOS=linux go build -tags lambda.norpc -o $@ ./$*
-	zip -FS -j $*.zip $@
-	cp $*.zip $(ARTIFACT)
+	cp $@ $(ARTIFACT)
 
 $(ARTIFACT):
 	@mkdir -p $(dir $(ARTIFACT))
@@ -43,7 +45,6 @@ node_modules/go.mod:
 vars:
 	@echo TARGETS: $(TARGETS)
 	@echo HANDLERS: $(HANDLERS)
-	@echo PACKAGES: $(PACKAGES)
 
 setup:
 	@echo "Checking golangci-lint for building..."
@@ -64,5 +65,19 @@ lint-fix: setup ## Run golangci-lint and prettier formatting fixers and go mod t
 	go mod tidy
 
 clean:
-	$(RM) $(HANDLERS) $(PACKAGES)
+	$(RM) $(HANDLERS)
 	$(RM) -r $(ARTIFACT)
+
+docker: build
+	@echo "Building Docker image..."
+	docker buildx build \
+        --platform linux/arm64 \
+        -t $(IMAGE_NAME):latest \
+        --provenance=false \
+        .
+
+push: docker
+	@echo "Pushing Docker image to ECR..."
+	aws ecr get-login-password --region $(REGION) | docker login --username AWS --password-stdin $(ECR_REPO_URI)
+	docker tag $(IMAGE_NAME) $(ECR_REPO_URI):latest
+	docker push $(ECR_REPO_URI):latest

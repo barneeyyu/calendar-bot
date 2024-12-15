@@ -67,12 +67,9 @@ package:
   individually: true
 
 functions:
-  # TODO change hello example with your new app
   hello:
-    runtime: provided.al2023
-    package:
-      artifact: ${env:ARTIFACT_LOC, 'func'}/hello.zip
-    handler: bootstrap
+    image:
+      uri: ${self:custom.ecrRepoUri}:latest
     events:
       - http:
           path: /hello
@@ -81,28 +78,19 @@ functions:
     #   securityGroupIds:
     #   subnetIds:
 
-# TODO define CloudFormation resource if you need
-resources:
-  - Conditions:
-      IsInteg: !Equals ["${sls:stage}", integration]
-      IsStaging: !Equals ["${sls:stage}", staging]
-      IsProd: !Equals ["${sls:stage}", production]
-      IsProdLike:
-        !Or [Condition: IsProd, Condition: IsStaging, Condition: IsInteg]
-      IsNotProdLike: !Not [Condition: IsProdLike]
-
   # API domain mapping
   # - ${file(apiMapping.yaml)}
   - ${file(apiGatewayAlarm.yaml)}
 
 custom:
-  prune:
-    automatic: true
-    number: 10
-  alerts:
-    dashboards: true
-    alarms:
-      - functionErrors
+  # prune:
+  #   automatic: true
+  #   number: 10
+  # alerts:
+  #   dashboards: true
+  #   alarms:
+  #     - functionErrors
+  ecrRepoUri: ${aws:accountId}.dkr.ecr.${self:provider.region}.amazonaws.com/barney/playground-images
 
   # domainName: ${ssm:VCSApiDomainName, null}
 
