@@ -1,5 +1,5 @@
 # The service name should be a static string and should NOT be prefixed or suffixed with any dynamic variables, such as stage name.
-service: public-example-app # TODO Pick a name.
+service: calendar-bot
 
 # You can pin your service to only deploy with a specific Serverless version
 # Check out docs.serverless.com for more details
@@ -10,7 +10,7 @@ useDotenv: true
 provider:
   name: aws
   region: ${env:AWS_REGION, env:AWS_DEFAULT_REGION, 'us-east-1'}
-
+  stage: ${opt:stage, 'dev'}
   endpointType: REGIONAL
   # deploymentBucket:
   #   name: ${ssm:/serverless-s3-bucket}
@@ -33,6 +33,11 @@ provider:
           Condition:
             StringEquals:
               "aws:RequestedRegion": !Ref AWS::Region
+        - Effect: Allow
+          Action:
+            - secretsmanager:GetSecretValue
+          Resource:
+            - arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:*
     # deploymentRole: arn:aws:iam::${aws:accountId}:role/RoleForServerlessDeploy
   tracing:
     lambda: true
@@ -50,10 +55,6 @@ provider:
   kmsKeyArn: ${ssm:/serverless-lambda-kms-key, null}
   logRetentionInDays: 90
 
-  # You can define service wide environment variables here
-  environment:
-    ENVVAR1: "env-var-1"
-
   # You can restrict API to only allow connection with service platform
   apiGateway:
     resourcePolicy:
@@ -67,22 +68,28 @@ package:
   individually: true
 
 functions:
-  hello:
+  eventHandler:
     image:
       uri: ${self:custom.ecrRepoUri}:latest
+    name: ${self:custom.functionName.eventHandler}
+    environment:
+      CHANNEL_SECRET: ${env:CHANNEL_SECRET}
+      CHANNEL_TOKEN: ${env:CHANNEL_TOKEN}
     events:
       - http:
-          path: /hello
-          method: get
+          path: /line-events
+          method: post
     # vpc: # Enable this block if service needs to be deployed into VPC
     #   securityGroupIds:
     #   subnetIds:
 
   # API domain mapping
   # - ${file(apiMapping.yaml)}
-  - ${file(apiGatewayAlarm.yaml)}
+  # - ${file(apiGatewayAlarm.yaml)}
 
 custom:
+  functionName:
+    eventHandler: ${self:service}-${self:provider.stage}-event-handler
   # prune:
   #   automatic: true
   #   number: 10

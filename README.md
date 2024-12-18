@@ -50,10 +50,34 @@ Run the following command to build the application:
 Testing setup and execution is left to the developer.
 
 ## Deploy
+### Deploy to AWS on local
+Run the following command to deploy the application:
 
+1. Login aws first, paste your aws credentials
+```bash
+aws configure
+#and paste your keys
+```
+2. Replace your line bot channel secret and token in `.env` file
+```bash
+CHANNEL_SECRET={{your_channel_secret}}
+CHANNEL_TOKEN={{your_channel_token}}
+```
 
-### Deploy to Production
+3. Deploy to AWS
+```bash
+sls deploy --stage {stageName} --verbose
+```
 
-Deployment to network-one-production is done by GitHub Actions on a push to the main branch
+4. When deploy successfully, copy the url of `line-events` API, and paste to the ***Line developers*** -> Webhook URL
 
-Ensure that the [.github/workflows/release.yaml](.github/workflows/release.yaml) has the TODO addressed to enable deployment to production
+### API Specification
+
+This document outlines the usage and specifications of two APIs. These APIs are designed for handling events from the LINE platform and broadcasting messages to users subscribed to a specific official account.
+
+### /line-events
+
+This API acts as a webhook for the LINE Bot, receiving and processing various events from the LINE platform.
+
+#### Request Method
+`POST`
