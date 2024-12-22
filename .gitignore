@@ -45,3 +45,9 @@ node_modules/
 *.idea
 
 **/bootstrap
+
+# Ignore actual environment file
+.env
+
+# But allow the example file
+!.env.example
