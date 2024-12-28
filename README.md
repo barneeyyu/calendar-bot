@@ -27,27 +27,38 @@ That's it, you are good to start coding!
 
 For more on building AWS Lambdas with Go, see [AWS docs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-golang.html)
 
-## Golang Linter Configuration
+## Development Commands
 
-Change the .golangci.yml file to match your project's needs.
-
-Execute the linter with:
+### Linting
+Execute the linter to check code quality:
 
     make lint
 
-If you want to run the linter with auto-fixing, run:
+Run linter with auto-fixing enabled:
 
     make lint-fix
 
-## Build
+### Testing
+Run all tests:
 
-Run the following command to build the application:
+    make test
 
-    make clean build
+Generate test coverage report:
 
-## Test
+    make coverage
 
-Testing setup and execution is left to the developer.
+### Building
+Build the application:
+
+    make docker-all      # Build Docker images
+    make push-all        # Push images to ECR
+    make build-and-push-all  # Build and push in one command
+
+### Cleanup
+Clean build artifacts:
+
+    make clean           # Remove binaries
+    make docker-clean    # Remove Docker images
 
 ## Deploy
 ### Deploy to AWS on local
@@ -58,18 +69,25 @@ Run the following command to deploy the application:
 aws configure
 #and paste your keys
 ```
-2. Replace your line bot channel secret and token in `.env` file
-```bash
-CHANNEL_SECRET={{your_channel_secret}}
-CHANNEL_TOKEN={{your_channel_token}}
-```
 
-3. Deploy to AWS
+2.
+    2.1Copy the environment template file:
+    ```
+    cp .env.example .env
+    ```
+    2.2 Edit the `.env` file and fill in your LINE Bot credentials:
+    ```bash
+    CHANNEL_SECRET={{your_channel_secret}}
+    CHANNEL_TOKEN={{your_channel_token}}
+    # These credentials can be found in the LINE Developers Console.
+    ```
+
+1. Deploy to AWS
 ```bash
 sls deploy --stage {stageName} --verbose
 ```
 
-4. When deploy successfully, copy the url of `line-events` API, and paste to the ***Line developers*** -> Webhook URL
+1. When deploy successfully, copy the url of `line-events` API, and paste to the ***Line developers*** -> Webhook URL
 
 ### API Specification
 

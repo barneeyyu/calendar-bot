@@ -14,7 +14,7 @@ const (
 	MESSAGE     = "message"
 	TIMESTAMP   = "timestamp"
 	COMPONENT   = "component"
-	SERVICENAME = "event-handler"
+	SERVICENAME = "event-reminder"
 )
 
 type EnvVars struct {

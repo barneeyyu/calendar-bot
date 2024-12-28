@@ -1,4 +1,7 @@
-.PHONY: build clean lint lint-fix docker push
+.PHONY: build clean lint lint-fix docker-all push-all build-and-push-all docker-clean \
+        $(addprefix docker-,$(FUNCTIONS)) \
+        $(addprefix push-,$(FUNCTIONS)) \
+        test coverage tidy vars setup
 
 # Get golangci-lint binary path
 GOPATH=$(shell go env GOPATH)
@@ -15,15 +18,17 @@ HANDLERS=$(addsuffix bootstrap,$(TARGETS))
 ARTIFACT=bin/
 
 # Docker variables
-IMAGE_NAME=calendar-bot
 ACCOUNT_ID=$(shell aws sts get-caller-identity --query Account --output text)
 REGION=$(shell aws configure get region)
-ECR_REPO_URI=$(ACCOUNT_ID).dkr.ecr.$(REGION).amazonaws.com/barney/playground-images
+ECR_REPO_URI=$(ACCOUNT_ID).dkr.ecr.$(REGION).amazonaws.com/barney/calendar-bot
+
+# define all functions
+FUNCTIONS=event-handler event-reminder
 
 build: setup test $(ARTIFACT) $(HANDLERS)
 
 %/bootstrap: %/*.go
-	env GOARCH=amd64 GOOS=linux go build -tags lambda.norpc -o $@ ./$*
+	env GOARCH=arm64 GOOS=linux go build -tags lambda.norpc -o $@ ./$*
 	cp $@ $(ARTIFACT)
 
 $(ARTIFACT):
@@ -68,16 +73,35 @@ clean:
 	$(RM) $(HANDLERS)
 	$(RM) -r $(ARTIFACT)
 
-docker: build
-	@echo "Building Docker image..."
-	docker buildx build \
-        --platform linux/arm64 \
-        -t $(IMAGE_NAME):latest \
-        --provenance=false \
-        .
+.PHONY: docker-all
+docker-all: $(addprefix docker-,$(FUNCTIONS))
 
-push: docker
-	@echo "Pushing Docker image to ECR..."
+docker-%: build
+	@echo "Building Docker image for $*..."
+	docker buildx build \
+		--platform linux/arm64 \
+		-t $*:latest \
+		--build-arg FUNCTION=$* \
+		--provenance=false \
+		-f services/public/func/$*/Dockerfile .
+
+.PHONY: push-all
+push-all: $(addprefix push-,$(FUNCTIONS))
+
+push-%: docker-%
+	@echo "Pushing Docker image for $* to ECR..."
 	aws ecr get-login-password --region $(REGION) | docker login --username AWS --password-stdin $(ECR_REPO_URI)
-	docker tag $(IMAGE_NAME) $(ECR_REPO_URI):latest
-	docker push $(ECR_REPO_URI):latest
+	docker tag $*:latest $(ECR_REPO_URI)/$*:latest
+	docker push $(ECR_REPO_URI)/$*:latest
+
+# assemble commands
+.PHONY: build-and-push-all
+build-and-push-all: docker-all push-all
+
+# clean docker images
+docker-clean:
+	@echo "Cleaning Docker images..."
+	for func in $(FUNCTIONS); do \
+		docker rmi -f $$func:latest || true; \
+		docker rmi -f $(ECR_BASE_URI)/$$func:latest || true; \
+	done

@@ -5,6 +5,8 @@ service: calendar-bot
 # Check out docs.serverless.com for more details
 frameworkVersion: "3"
 configValidationMode: error
+
+# true means use .env file
 useDotenv: true
 
 provider:
@@ -12,6 +14,7 @@ provider:
   region: ${env:AWS_REGION, env:AWS_DEFAULT_REGION, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   endpointType: REGIONAL
+  architecture: arm64
   # deploymentBucket:
   #   name: ${ssm:/serverless-s3-bucket}
   #   blockPublicAccess: true
@@ -38,6 +41,15 @@ provider:
             - secretsmanager:GetSecretValue
           Resource:
             - arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:*
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:Query
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource: 
+            - "Fn::GetAtt": [ CalendarEventsTable, Arn ]
     # deploymentRole: arn:aws:iam::${aws:accountId}:role/RoleForServerlessDeploy
   tracing:
     lambda: true
@@ -64,13 +76,33 @@ provider:
         Resource:
           - execute-api:/*/*/*
 
+resources:
+  Resources:
+    CalendarEventsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-events
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: eventTime
+            AttributeType: N
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: eventTime
+            KeyType: RANGE
+
 package:
   individually: true
 
 functions:
   eventHandler:
     image:
-      uri: ${self:custom.ecrRepoUri}:latest
+      uri: ${self:custom.ecrRepoUri}/event-handler:latest
+      command: 
+        - handler # assume the handler is the entrypoint
     name: ${self:custom.functionName.eventHandler}
     environment:
       CHANNEL_SECRET: ${env:CHANNEL_SECRET}
@@ -83,6 +115,16 @@ functions:
     #   securityGroupIds:
     #   subnetIds:
 
+  eventReminder:
+    image:
+      uri: ${self:custom.ecrRepoUri}/event-reminder:latest
+      command: 
+        - handler # assume the handler is the entrypoint
+    name: ${self:custom.functionName.eventReminder}
+    environment:
+      CHANNEL_SECRET: ${env:CHANNEL_SECRET}
+      CHANNEL_TOKEN: ${env:CHANNEL_TOKEN}
+
   # API domain mapping
   # - ${file(apiMapping.yaml)}
   # - ${file(apiGatewayAlarm.yaml)}
@@ -90,6 +132,7 @@ functions:
 custom:
   functionName:
     eventHandler: ${self:service}-${self:provider.stage}-event-handler
+    eventReminder: ${self:service}-${self:provider.stage}-event-reminder 
   # prune:
   #   automatic: true
   #   number: 10
@@ -97,7 +140,7 @@ custom:
   #   dashboards: true
   #   alarms:
   #     - functionErrors
-  ecrRepoUri: ${aws:accountId}.dkr.ecr.${self:provider.region}.amazonaws.com/barney/playground-images
+  ecrRepoUri: ${aws:accountId}.dkr.ecr.${self:provider.region}.amazonaws.com/barney/calendar-bot
 
   # domainName: ${ssm:VCSApiDomainName, null}
 
