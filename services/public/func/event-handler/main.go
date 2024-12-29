@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/line/line-bot-sdk-go/linebot"
 	"github.com/sirupsen/logrus"
 )
@@ -18,7 +21,10 @@ const (
 )
 
 type EnvVars struct {
-	botClient *linebot.Client
+	botClient           *linebot.Client
+	schedulerClient     *scheduler.Client
+	ReminderFunctionArn string
+	SchedulerRoleArn    string
 }
 
 func getEnvironmentVariables() (envVars *EnvVars, err error) {
@@ -41,8 +47,28 @@ func getEnvironmentVariables() (envVars *EnvVars, err error) {
 		return nil, errors.New("initial line bot failed")
 	}
 
+	// create EventBridge Scheduler client
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	schedulerClient := scheduler.NewFromConfig(cfg)
+
+	reminderFunctionArn := os.Getenv("REMINDER_FUNCTION_ARN")
+	if reminderFunctionArn == "" {
+		return nil, errors.New("REMINDER_FUNCTION_ARN is not set")
+	}
+
+	schedulerRoleArn := os.Getenv("SCHEDULER_ROLE_ARN")
+	if schedulerRoleArn == "" {
+		return nil, errors.New("SCHEDULER_ROLE_ARN is not set")
+	}
+
 	return &EnvVars{
-		botClient: bot,
+		botClient:           bot,
+		schedulerClient:     schedulerClient,
+		ReminderFunctionArn: reminderFunctionArn,
+		SchedulerRoleArn:    schedulerRoleArn,
 	}, nil
 }
 

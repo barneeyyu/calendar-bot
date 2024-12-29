@@ -32,10 +32,10 @@ provider:
             - logs:CreateLogStream
             - logs:PutLogEvents
           Resource:
-            - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+            - arn:aws:logs:${aws:region}:${aws:accountId}:log-group:*
           Condition:
             StringEquals:
-              "aws:RequestedRegion": !Ref AWS::Region
+              "aws:RequestedRegion": ${aws:region}
         - Effect: Allow
           Action:
             - secretsmanager:GetSecretValue
@@ -50,6 +50,12 @@ provider:
             - dynamodb:DeleteItem
           Resource: 
             - "Fn::GetAtt": [ CalendarEventsTable, Arn ]
+        - Effect: Allow
+          Action:
+            - scheduler:CreateSchedule
+            - iam:PassRole
+          Resource: 
+            - "*"
     # deploymentRole: arn:aws:iam::${aws:accountId}:role/RoleForServerlessDeploy
   tracing:
     lambda: true
@@ -76,24 +82,6 @@ provider:
         Resource:
           - execute-api:/*/*/*
 
-resources:
-  Resources:
-    CalendarEventsTable:
-      Type: AWS::DynamoDB::Table
-      Properties:
-        TableName: ${self:service}-${self:provider.stage}-events
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: userId
-            AttributeType: S
-          - AttributeName: eventTime
-            AttributeType: N
-        KeySchema:
-          - AttributeName: userId
-            KeyType: HASH
-          - AttributeName: eventTime
-            KeyType: RANGE
-
 package:
   individually: true
 
@@ -107,6 +95,10 @@ functions:
     environment:
       CHANNEL_SECRET: ${env:CHANNEL_SECRET}
       CHANNEL_TOKEN: ${env:CHANNEL_TOKEN}
+      REMINDER_FUNCTION_ARN: 
+        Fn::GetAtt: [EventReminderLambdaFunction, Arn]
+      SCHEDULER_ROLE_ARN:
+        Fn::GetAtt: [SchedulerRole, Arn]
     events:
       - http:
           path: /line-events
@@ -143,6 +135,44 @@ custom:
   ecrRepoUri: ${aws:accountId}.dkr.ecr.${self:provider.region}.amazonaws.com/barney/calendar-bot
 
   # domainName: ${ssm:VCSApiDomainName, null}
+
+resources:
+  Resources:
+    CalendarEventsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-events
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: eventTime
+            AttributeType: N
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: eventTime
+            KeyType: RANGE
+    SchedulerRole:
+      Type: AWS::IAM::Role
+      DependsOn: EventReminderLambdaFunction
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: scheduler.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: InvokeLambda
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource:
+                    Fn::GetAtt: [EventReminderLambdaFunction, Arn]
 
 plugins:
   - "@serverless/safeguards-plugin"

@@ -2,7 +2,11 @@ FROM golang:1.21 as builder
 
 WORKDIR /app
 COPY . .
-RUN GOOS=linux GOARCH=arm64 go build -o bootstrap ./services/public/func/event-reminder
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+    -ldflags="-s -w" \
+    -trimpath \
+    -tags lambda.norpc \
+    -o bootstrap ./services/public/func/event-reminder
 
 FROM public.ecr.aws/lambda/provided:al2-arm64
 
