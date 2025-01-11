@@ -24,7 +24,7 @@ type TransferScheduleResponse struct {
 	Valid    bool   `json:"valid"`    // true/false
 }
 
-type OpenaiHandler interface {
+type OpenaiAPI interface {
 	TransferValidSchedule(inputMsg string) (*TransferScheduleResponse, error)
 }
 
@@ -32,7 +32,7 @@ type OpenaiClient struct {
 	client *openai.Client
 }
 
-func NewOpenAIClient(apiKey string, baseUrl string) (OpenaiHandler, error) {
+func NewOpenAIClient(apiKey string, baseUrl string) (OpenaiAPI, error) {
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = baseUrl
 	client := openai.NewClientWithConfig(config)

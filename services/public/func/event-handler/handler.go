@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/line/line-bot-sdk-go/linebot"
+	"github.com/line/line-bot-sdk-go/v7/linebot"
 	"github.com/sirupsen/logrus"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -30,9 +30,11 @@ var (
 )
 
 type Handler struct {
-	logger       *logrus.Entry
-	envVars      *EnvVars
-	openaiClient utils.OpenaiHandler
+	logger          *logrus.Entry
+	envVars         *EnvVars
+	linebotClient   utils.LinebotAPI
+	openaiClient    utils.OpenaiAPI
+	schedulerClient *scheduler.Client
 }
 
 type ReminderEvent struct {
@@ -40,11 +42,13 @@ type ReminderEvent struct {
 	Task   string `json:"task"`
 }
 
-func NewHandler(logger *logrus.Entry, envVars *EnvVars, openaiClient utils.OpenaiHandler) (*Handler, error) {
+func NewHandler(logger *logrus.Entry, envVars *EnvVars, linebotClient utils.LinebotAPI, openaiClient utils.OpenaiAPI, schedulerClient *scheduler.Client) (*Handler, error) {
 	return &Handler{
-		logger:       logger,
-		envVars:      envVars,
-		openaiClient: openaiClient,
+		logger:          logger,
+		envVars:         envVars,
+		linebotClient:   linebotClient,
+		openaiClient:    openaiClient,
+		schedulerClient: schedulerClient,
 	}, nil
 }
 
@@ -79,7 +83,7 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 		req.Header.Set(key, value)
 	}
 
-	messageEvents, err := h.envVars.botClient.ParseRequest(req)
+	messageEvents, err := h.linebotClient.ParseRequest(req)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to parse request")
 		if err == linebot.ErrInvalidSignature {
@@ -102,7 +106,6 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 			"group_id":   event.Source.GroupID,
 		}).Info("event handling")
 		if event.Type == linebot.EventTypeMessage {
-			var replyMessage string
 			switch message := event.Message.(type) {
 			case *linebot.TextMessage:
 				// handle text message
@@ -125,9 +128,13 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 					if err != nil {
 						h.logger.WithError(err).Error("Failed to handle text message")
 						if err == ErrPastDateTime {
-							replyMessage = "無法設定過去的時間"
+							if err = h.linebotClient.ReplyMessage(event.ReplyToken, "無法設定過去的時間"); err != nil {
+								h.logger.WithError(err).Error("Error replying to message")
+							}
 						} else if err == ErrFutureDateTime {
-							replyMessage = "無法設定未來超過一年的時間"
+							if err = h.linebotClient.ReplyMessage(event.ReplyToken, "無法設定未來超過一年的時間"); err != nil {
+								h.logger.WithError(err).Error("Error replying to message")
+							}
 						} else {
 							return events.APIGatewayProxyResponse{
 								Body:       err.Error(),
@@ -138,17 +145,19 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 						// create reminder
 						if err := h.createReminder(event.Source.UserID, utcScheduledTime, validSchedule.Task); err != nil {
 							h.logger.WithError(err).Error("Failed to create reminder")
-							replyMessage = "提醒設定失敗，請稍後再試"
+							if err = h.linebotClient.ReplyMessage(event.ReplyToken, "提醒設定失敗，請稍後再試"); err != nil {
+								h.logger.WithError(err).Error("Error replying to message")
+							}
+						} else {
+							if err = h.linebotClient.ReplyMessage(event.ReplyToken, fmt.Sprintf("提醒您：%s %s 已設定成功", validSchedule.DateTime, validSchedule.Task)); err != nil {
+								h.logger.WithError(err).Error("Error replying to message")
+							}
 						}
-						replyMessage = fmt.Sprintf("提醒您：%s %s 已設定成功", validSchedule.DateTime, validSchedule.Task)
 					}
 				} else {
-					replyMessage = "輸入格式錯誤，必須包含日期、時間、要做的事情。請重新輸入"
-				}
-
-				// reply message
-				if _, err = h.envVars.botClient.ReplyMessage(event.ReplyToken, linebot.NewTextMessage(replyMessage)).Do(); err != nil {
-					h.logger.WithError(err).Error("Error replying to message")
+					if err = h.linebotClient.ReplyMessage(event.ReplyToken, "輸入格式錯誤，必須包含日期、時間、要做的事情。請重新輸入"); err != nil {
+						h.logger.WithError(err).Error("Error replying to message")
+					}
 				}
 			}
 		}
@@ -194,7 +203,7 @@ func (h *Handler) createReminder(userID string, scheduledTime time.Time, task st
 		"schedule_expression": fmt.Sprintf("at(%s)", scheduledTime.Format("2006-01-02T15:04:00")),
 	}).Info("Creating schedule")
 
-	// 準備要傳給 event-reminder 的資料
+	// prepare payload for event-reminder
 	reminderEvent := ReminderEvent{
 		UserID: userID,
 		Task:   task,
@@ -205,7 +214,7 @@ func (h *Handler) createReminder(userID string, scheduledTime time.Time, task st
 	}
 
 	// create schedule
-	_, err = h.envVars.schedulerClient.CreateSchedule(context.TODO(), &scheduler.CreateScheduleInput{
+	_, err = h.schedulerClient.CreateSchedule(context.TODO(), &scheduler.CreateScheduleInput{
 		Name: aws.String(fmt.Sprintf("reminder-%s-%d", userID, time.Now().Unix())),
 		FlexibleTimeWindow: &types.FlexibleTimeWindow{
 			Mode: types.FlexibleTimeWindowModeOff,

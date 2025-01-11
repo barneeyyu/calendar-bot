@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.28.7
 	github.com/aws/aws-sdk-go-v2/service/scheduler v1.12.9
 	github.com/line/line-bot-sdk-go v7.8.0+incompatible
+	github.com/line/line-bot-sdk-go/v7 v7.21.0
 	github.com/sashabaranov/go-openai v1.36.1
 	github.com/sirupsen/logrus v1.9.3
 	gopkg.in/yaml.v2 v2.4.0

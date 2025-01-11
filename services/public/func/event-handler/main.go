@@ -4,13 +4,11 @@ import (
 	"calendar-bot/utils"
 	"context"
 	"errors"
-	"log"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
-	"github.com/line/line-bot-sdk-go/linebot"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,8 +21,8 @@ const (
 )
 
 type EnvVars struct {
-	botClient           *linebot.Client
-	schedulerClient     *scheduler.Client
+	channelSecret       string
+	channelToken        string
 	openaiBaseUrl       string
 	openaiApiKey        string
 	ReminderFunctionArn string
@@ -41,22 +39,6 @@ func getEnvironmentVariables() (envVars *EnvVars, err error) {
 	if channelToken == "" {
 		return nil, errors.New("CHANNEL_TOKEN is not set")
 	}
-
-	// initialize LINE Bot
-	bot, err := linebot.New(
-		channelSecret,
-		channelToken,
-	)
-	if err != nil {
-		return nil, errors.New("initial line bot failed")
-	}
-
-	// create EventBridge Scheduler client
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		return nil, err
-	}
-	schedulerClient := scheduler.NewFromConfig(cfg)
 
 	openaiBaseUrl := os.Getenv("OPENAI_BASE_URL")
 	if openaiBaseUrl == "" {
@@ -79,8 +61,8 @@ func getEnvironmentVariables() (envVars *EnvVars, err error) {
 	}
 
 	return &EnvVars{
-		botClient:           bot,
-		schedulerClient:     schedulerClient,
+		channelSecret:       channelSecret,
+		channelToken:        channelToken,
 		openaiBaseUrl:       openaiBaseUrl,
 		openaiApiKey:        openaiApiKey,
 		ReminderFunctionArn: reminderFunctionArn,
@@ -104,12 +86,25 @@ func main() {
 		panic(err)
 	}
 
-	openaiClient, err := utils.NewOpenAIClient(envVars.openaiApiKey, envVars.openaiBaseUrl)
+	linebotClient, err := utils.NewLineBotClient(envVars.channelSecret, envVars.channelToken)
 	if err != nil {
-		log.Fatal(err)
+		logger.WithError(err).Error("Failed to initialize LINE Bot")
+		panic(err)
 	}
 
-	handler, err := NewHandler(logger, envVars, openaiClient)
+	openaiClient, err := utils.NewOpenAIClient(envVars.openaiApiKey, envVars.openaiBaseUrl)
+	if err != nil {
+		panic(err)
+	}
+
+	// create EventBridge Scheduler client
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		panic(err)
+	}
+	schedulerClient := scheduler.NewFromConfig(cfg)
+
+	handler, err := NewHandler(logger, envVars, linebotClient, openaiClient, schedulerClient)
 	if err != nil {
 		logger.WithError(err).Error("Failed to create handler")
 		panic(err)
