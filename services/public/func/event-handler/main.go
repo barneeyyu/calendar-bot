@@ -1,8 +1,10 @@
 package main
 
 import (
+	"calendar-bot/utils"
 	"context"
 	"errors"
+	"log"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -23,6 +25,8 @@ const (
 type EnvVars struct {
 	botClient           *linebot.Client
 	schedulerClient     *scheduler.Client
+	openaiBaseUrl       string
+	openaiApiKey        string
 	ReminderFunctionArn string
 	SchedulerRoleArn    string
 }
@@ -54,6 +58,16 @@ func getEnvironmentVariables() (envVars *EnvVars, err error) {
 	}
 	schedulerClient := scheduler.NewFromConfig(cfg)
 
+	openaiBaseUrl := os.Getenv("OPENAI_BASE_URL")
+	if openaiBaseUrl == "" {
+		return nil, errors.New("OPENAI_BASE_URL is not set")
+	}
+
+	openaiApiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiApiKey == "" {
+		return nil, errors.New("OPENAI_API_KEY is not set")
+	}
+
 	reminderFunctionArn := os.Getenv("REMINDER_FUNCTION_ARN")
 	if reminderFunctionArn == "" {
 		return nil, errors.New("REMINDER_FUNCTION_ARN is not set")
@@ -67,6 +81,8 @@ func getEnvironmentVariables() (envVars *EnvVars, err error) {
 	return &EnvVars{
 		botClient:           bot,
 		schedulerClient:     schedulerClient,
+		openaiBaseUrl:       openaiBaseUrl,
+		openaiApiKey:        openaiApiKey,
 		ReminderFunctionArn: reminderFunctionArn,
 		SchedulerRoleArn:    schedulerRoleArn,
 	}, nil
@@ -88,7 +104,12 @@ func main() {
 		panic(err)
 	}
 
-	handler, err := NewHandler(logger, envVars)
+	openaiClient, err := utils.NewOpenAIClient(envVars.openaiApiKey, envVars.openaiBaseUrl)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	handler, err := NewHandler(logger, envVars, openaiClient)
 	if err != nil {
 		logger.WithError(err).Error("Failed to create handler")
 		panic(err)

@@ -2,12 +2,12 @@ package main
 
 import (
 	"bytes"
+	"calendar-bot/utils"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -25,12 +25,14 @@ const (
 )
 
 var (
-	ErrPastDateTime = errors.New("can't set past time")
+	ErrPastDateTime   = errors.New("can't set past time")
+	ErrFutureDateTime = errors.New("can't set future time over 1 year")
 )
 
 type Handler struct {
-	logger  *logrus.Entry
-	envVars *EnvVars
+	logger       *logrus.Entry
+	envVars      *EnvVars
+	openaiClient utils.OpenaiHandler
 }
 
 type ReminderEvent struct {
@@ -38,10 +40,11 @@ type ReminderEvent struct {
 	Task   string `json:"task"`
 }
 
-func NewHandler(logger *logrus.Entry, envVars *EnvVars) (*Handler, error) {
+func NewHandler(logger *logrus.Entry, envVars *EnvVars, openaiClient utils.OpenaiHandler) (*Handler, error) {
 	return &Handler{
-		logger:  logger,
-		envVars: envVars,
+		logger:       logger,
+		envVars:      envVars,
+		openaiClient: openaiClient,
 	}, nil
 }
 
@@ -104,28 +107,44 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 			case *linebot.TextMessage:
 				// handle text message
 				h.logger.Infof("Received text message: %s", message.Text)
-				scheduledTime, task, err := h.handleTextMessage(message.Text)
-				if err != nil {
-					h.logger.WithError(err).Error("Failed to handle text message")
-					if err == ErrPastDateTime {
-						replyMessage = "無法設定過去的時間"
-					} else {
-						return events.APIGatewayProxyResponse{
-							Body:       err.Error(),
-							StatusCode: 500,
-						}, nil
-					}
-				}
 
-				// create reminder
-				if err := h.createReminder(event.Source.UserID, scheduledTime, task); err != nil {
-					h.logger.WithError(err).Error("Failed to create reminder")
+				validSchedule, err := h.openaiClient.TransferValidSchedule(message.Text)
+				if err != nil {
+					h.logger.WithError(err).Error("Failed to transfer valid schedule")
 					return events.APIGatewayProxyResponse{
 						Body:       err.Error(),
 						StatusCode: 500,
 					}, nil
 				}
-				replyMessage = "提醒您：" + message.Text + " 已設定成功"
+				h.logger.WithFields(logrus.Fields{
+					"valid_schedule": validSchedule,
+				}).Info("Transfer valid schedule from openai API")
+
+				if validSchedule.Valid {
+					utcScheduledTime, err := h.validateScheduleTimeAndTask(validSchedule.DateTime)
+					if err != nil {
+						h.logger.WithError(err).Error("Failed to handle text message")
+						if err == ErrPastDateTime {
+							replyMessage = "無法設定過去的時間"
+						} else if err == ErrFutureDateTime {
+							replyMessage = "無法設定未來超過一年的時間"
+						} else {
+							return events.APIGatewayProxyResponse{
+								Body:       err.Error(),
+								StatusCode: 500,
+							}, nil
+						}
+					} else {
+						// create reminder
+						if err := h.createReminder(event.Source.UserID, utcScheduledTime, validSchedule.Task); err != nil {
+							h.logger.WithError(err).Error("Failed to create reminder")
+							replyMessage = "提醒設定失敗，請稍後再試"
+						}
+						replyMessage = fmt.Sprintf("提醒您：%s %s 已設定成功", validSchedule.DateTime, validSchedule.Task)
+					}
+				} else {
+					replyMessage = "輸入格式錯誤，必須包含日期、時間、要做的事情。請重新輸入"
+				}
 
 				// reply message
 				if _, err = h.envVars.botClient.ReplyMessage(event.ReplyToken, linebot.NewTextMessage(replyMessage)).Do(); err != nil {
@@ -140,27 +159,32 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 	}, nil
 }
 
-func (h *Handler) handleTextMessage(message string) (time.Time, string, error) {
-	parts := strings.Split(message, " ")
-	dateTimeStr := parts[0] + " " + parts[1]
-	task := strings.Join(parts[2:], " ")
-
+func (h *Handler) validateScheduleTimeAndTask(dateTime string) (time.Time, error) {
 	loc, err := time.LoadLocation(timeZone)
 	if err != nil {
-		return time.Time{}, "", err
+		return time.Time{}, err
 	}
-	scheduledTime, err := time.ParseInLocation(timeFormat, dateTimeStr, loc)
+	scheduledTime, err := time.ParseInLocation(timeFormat, dateTime, loc)
 	if err != nil {
-		return time.Time{}, "", err
+		return time.Time{}, err
 	}
 
-	if scheduledTime.Before(time.Now().In(loc)) {
-		return time.Time{}, "", ErrPastDateTime
+	now := time.Now().In(loc)
+
+	// check if scheduled time is past
+	if scheduledTime.Before(now) {
+		return time.Time{}, ErrPastDateTime
+	}
+
+	// check if scheduled time is over 1 year
+	oneYearLater := now.AddDate(1, 0, 0)
+	if scheduledTime.After(oneYearLater) {
+		return time.Time{}, ErrFutureDateTime
 	}
 
 	utcScheduledTime := scheduledTime.UTC()
 
-	return utcScheduledTime, task, nil
+	return utcScheduledTime, nil
 }
 
 func (h *Handler) createReminder(userID string, scheduledTime time.Time, task string) error {

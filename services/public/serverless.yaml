@@ -95,6 +95,8 @@ functions:
     environment:
       CHANNEL_SECRET: ${env:CHANNEL_SECRET}
       CHANNEL_TOKEN: ${env:CHANNEL_TOKEN}
+      OPENAI_BASE_URL: ${env:OPENAI_BASE_URL}
+      OPENAI_API_KEY: ${env:OPENAI_API_KEY}
       REMINDER_FUNCTION_ARN: 
         Fn::GetAtt: [EventReminderLambdaFunction, Arn]
       SCHEDULER_ROLE_ARN:
