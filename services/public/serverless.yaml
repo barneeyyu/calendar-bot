@@ -101,6 +101,7 @@ functions:
         Fn::GetAtt: [EventReminderLambdaFunction, Arn]
       SCHEDULER_ROLE_ARN:
         Fn::GetAtt: [SchedulerRole, Arn]
+      EVENT_TABLE_NAME: ${self:custom.eventTableName}
     events:
       - http:
           path: /line-events
@@ -127,6 +128,7 @@ custom:
   functionName:
     eventHandler: ${self:service}-${self:provider.stage}-event-handler
     eventReminder: ${self:service}-${self:provider.stage}-event-reminder 
+  eventTableName: calendar-bot-${self:provider.stage}-events
   # prune:
   #   automatic: true
   #   number: 10
@@ -143,7 +145,7 @@ resources:
     CalendarEventsTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: ${self:service}-${self:provider.stage}-events
+        TableName: calendar-bot-${self:provider.stage}-events
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: userId

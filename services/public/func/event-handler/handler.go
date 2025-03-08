@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -15,8 +16,10 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
-	"github.com/aws/aws-sdk-go-v2/service/scheduler/types"
+	schedulertypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 )
 
 const (
@@ -29,12 +32,20 @@ var (
 	ErrFutureDateTime = errors.New("can't set future time over 1 year")
 )
 
+type DynamoDbAPI interface {
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+}
+
 type Handler struct {
 	logger          *logrus.Entry
 	envVars         *EnvVars
 	linebotClient   utils.LinebotAPI
 	openaiClient    utils.OpenaiAPI
 	schedulerClient *scheduler.Client
+	dynamodbClient  DynamoDbAPI
 }
 
 type ReminderEvent struct {
@@ -42,13 +53,14 @@ type ReminderEvent struct {
 	Task   string `json:"task"`
 }
 
-func NewHandler(logger *logrus.Entry, envVars *EnvVars, linebotClient utils.LinebotAPI, openaiClient utils.OpenaiAPI, schedulerClient *scheduler.Client) (*Handler, error) {
+func NewHandler(logger *logrus.Entry, envVars *EnvVars, linebotClient utils.LinebotAPI, openaiClient utils.OpenaiAPI, schedulerClient *scheduler.Client, dynamodbClient DynamoDbAPI) (*Handler, error) {
 	return &Handler{
 		logger:          logger,
 		envVars:         envVars,
 		linebotClient:   linebotClient,
 		openaiClient:    openaiClient,
 		schedulerClient: schedulerClient,
+		dynamodbClient:  dynamodbClient,
 	}, nil
 }
 
@@ -143,12 +155,20 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 						}
 					} else {
 						// create reminder
-						if err := h.createReminder(event.Source.UserID, utcScheduledTime, validSchedule.Task); err != nil {
+						scheduleOutput, err := h.createReminder(event.Source.UserID, utcScheduledTime, validSchedule.Task)
+						if err != nil {
 							h.logger.WithError(err).Error("Failed to create reminder")
 							if err = h.linebotClient.ReplyMessage(event.ReplyToken, "提醒設定失敗，請稍後再試"); err != nil {
 								h.logger.WithError(err).Error("Error replying to message")
 							}
 						} else {
+							if err = h.saveEvent(event.Source.UserID, utcScheduledTime, validSchedule.Task, *scheduleOutput.ScheduleArn); err != nil {
+								h.logger.WithError(err).Error("Failed to save event")
+								if err = h.linebotClient.ReplyMessage(event.ReplyToken, "提醒設定失敗，請稍後再試"); err != nil {
+									h.logger.WithError(err).Error("Error replying to message")
+								}
+							}
+
 							if err = h.linebotClient.ReplyMessage(event.ReplyToken, fmt.Sprintf("提醒您：%s %s 已設定成功", validSchedule.DateTime, validSchedule.Task)); err != nil {
 								h.logger.WithError(err).Error("Error replying to message")
 							}
@@ -166,6 +186,27 @@ func (h *Handler) EventHandler(request events.APIGatewayProxyRequest) (events.AP
 	return events.APIGatewayProxyResponse{
 		StatusCode: 200,
 	}, nil
+}
+
+func (h *Handler) saveEvent(userId string, scheduledTime time.Time, task string, schedulerArn string) error {
+	input := &dynamodb.PutItemInput{
+		TableName: aws.String(h.envVars.EventTableName),
+		Item: map[string]types.AttributeValue{
+			"userId":       &types.AttributeValueMemberS{Value: "E#" + userId},
+			"eventTime":    &types.AttributeValueMemberN{Value: strconv.FormatInt(scheduledTime.Unix(), 10)},
+			"task":         &types.AttributeValueMemberS{Value: task},
+			"status":       &types.AttributeValueMemberS{Value: "pending"},
+			"createdAt":    &types.AttributeValueMemberS{Value: time.Now().Format(timeFormat)},
+			"schedulerArn": &types.AttributeValueMemberS{Value: schedulerArn},
+		},
+	}
+
+	_, err := h.dynamodbClient.PutItem(context.TODO(), input)
+	if err != nil {
+		h.logger.WithError(err).Errorf("User %s Failed to save event", userId)
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) validateScheduleTimeAndTask(dateTime string) (time.Time, error) {
@@ -196,7 +237,7 @@ func (h *Handler) validateScheduleTimeAndTask(dateTime string) (time.Time, error
 	return utcScheduledTime, nil
 }
 
-func (h *Handler) createReminder(userID string, scheduledTime time.Time, task string) error {
+func (h *Handler) createReminder(userID string, scheduledTime time.Time, task string) (*scheduler.CreateScheduleOutput, error) {
 	h.logger.WithFields(logrus.Fields{
 		"original_time":       scheduledTime,
 		"formatted_time":      scheduledTime.Format("2006-01-02T15:04:00"),
@@ -210,22 +251,26 @@ func (h *Handler) createReminder(userID string, scheduledTime time.Time, task st
 	}
 	payload, err := json.Marshal(reminderEvent)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// create schedule
-	_, err = h.schedulerClient.CreateSchedule(context.TODO(), &scheduler.CreateScheduleInput{
+	scheduleOutput, err := h.schedulerClient.CreateSchedule(context.TODO(), &scheduler.CreateScheduleInput{
 		Name: aws.String(fmt.Sprintf("reminder-%s-%d", userID, time.Now().Unix())),
-		FlexibleTimeWindow: &types.FlexibleTimeWindow{
-			Mode: types.FlexibleTimeWindowModeOff,
+		FlexibleTimeWindow: &schedulertypes.FlexibleTimeWindow{
+			Mode: schedulertypes.FlexibleTimeWindowModeOff,
 		},
 		ScheduleExpression: aws.String(fmt.Sprintf("at(%s)", scheduledTime.Format("2006-01-02T15:04:00"))),
-		Target: &types.Target{
+		Target: &schedulertypes.Target{
 			Arn:     aws.String(h.envVars.ReminderFunctionArn),
 			RoleArn: aws.String(h.envVars.SchedulerRoleArn),
 			Input:   aws.String(string(payload)),
 		},
 	})
+	if err != nil {
+		h.logger.WithError(err).Errorf("User %s Failed to create schedule", userID)
+		return nil, err
+	}
 
-	return err
+	return scheduleOutput, nil
 }
